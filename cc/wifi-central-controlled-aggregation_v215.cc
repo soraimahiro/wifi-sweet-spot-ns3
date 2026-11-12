@@ -32,6 +32,7 @@
  *
  * v215
  * Developed and tested for ns-3.30.1, https://www.nsnam.org/releases/ns-3-30/
+ * Ported to ns-3.48 (see README.md, section "Ported to ns-3.48")
  */
 
 
@@ -250,6 +251,40 @@ using namespace ns3;
 // Define a log component
 NS_LOG_COMPONENT_DEFINE ("SimpleMpduAggregation");
 
+// ---------------------------------------------------------------------------
+// ns-3.48 port helpers
+// In ns-3.48 the "ChannelNumber"/"ChannelWidth" PHY attributes are read-only
+// and WifiPhy::SetChannelNumber() was removed. The operating channel is set via
+// the "ChannelSettings" attribute: "{number, width, band, primary20 index}".
+// ---------------------------------------------------------------------------
+static uint32_t g_channelWidth = 20; ///< width (MHz) used for 5 GHz channels (set in main)
+
+/**
+ * Build the "ChannelSettings" string for a channel number.
+ * Channels 1-14 are 2.4 GHz (always 20 MHz); the rest are 5 GHz.
+ */
+std::string ChannelSettingsStr (uint16_t channel)
+{
+  std::ostringstream oss;
+  if (channel <= 14)
+    oss << "{" << channel << ", 20, BAND_2_4GHZ, 0}";
+  else
+    oss << "{" << channel << ", " << g_channelWidth << ", BAND_5GHZ, 0}";
+  return oss.str ();
+}
+
+/**
+ * "No AP" MAC string, in the same format as the AP records
+ * (ns-3.30 hard-coded "02-06-00:00:00:00:00:00"; the Address type id changed).
+ */
+std::string NoApMacStr ()
+{
+  std::ostringstream oss;
+  oss << Address (Mac48Address ());
+  return oss.str ();
+}
+
+
 /*  this works, but it is not needed
 static void SetPhySleepMode (Ptr <WifiPhy> myPhy) {
   myPhy->SetSleepMode();
@@ -283,49 +318,50 @@ std::string getWirelessBandOfChannel(uint8_t channel) {
   }
 }
 
-std::string getWirelessBandOfStandard(enum ns3::WifiPhyStandard standard) {
+std::string getWirelessBandOfVersion(std::string my_version80211) {
+  // ns-3.48: WifiStandard no longer encodes the band (11n is used in both bands)
   // see https://en.wikipedia.org/wiki/List_of_WLAN_channels#2.4_GHz_(802.11b/g/n/ax)
-  if (standard == WIFI_PHY_STANDARD_80211a ) {
+  if (my_version80211 == "11a" ) {
     return "5 GHz"; // 5GHz
   }
-  else if (standard == WIFI_PHY_STANDARD_80211b ) {
+  else if (my_version80211 == "11b" ) {
     return "2.4 GHz";
   }
-  else if (standard == WIFI_PHY_STANDARD_80211g ) {
+  else if (my_version80211 == "11g" ) {
     return "2.4 GHz";
   }
-  else if (standard == WIFI_PHY_STANDARD_80211n_2_4GHZ  ) {
+  else if (my_version80211 == "11n2.4" ) {
     return "2.4 GHz";
   }
-  else if (standard == WIFI_PHY_STANDARD_80211n_5GHZ  ) {
+  else if (my_version80211 == "11n5" ) {
     return "5 GHz";
   }
-  else if (standard == WIFI_PHY_STANDARD_80211ac ) {
+  else if (my_version80211 == "11ac" ) {
     return "5 GHz";
   }
 
   // if I am here, it means I have asked for an unsupported standard (unsupported by this program so far)
-  NS_ASSERT(false);
+  NS_FATAL_ERROR ("unsupported configuration");
 }
 
-ns3::WifiPhyStandard convertVersionToStandard (std::string my_version80211) {
+ns3::WifiStandard convertVersionToStandard (std::string my_version80211) {
   if (my_version80211 == "11n5") {
-    return WIFI_PHY_STANDARD_80211n_5GHZ;
+    return WIFI_STANDARD_80211n;
   }
   else if (my_version80211 == "11ac") {
-    return WIFI_PHY_STANDARD_80211ac;
+    return WIFI_STANDARD_80211ac;
   }
   else if (my_version80211 == "11n2.4") {
-    return WIFI_PHY_STANDARD_80211n_2_4GHZ;
+    return WIFI_STANDARD_80211n;
   }
   else if (my_version80211 == "11g") {
-    return WIFI_PHY_STANDARD_80211g;
+    return WIFI_STANDARD_80211g;
   }
   else if (my_version80211 == "11a") {
-    return WIFI_PHY_STANDARD_80211a;
+    return WIFI_STANDARD_80211a;
   }
   // if I am here, it means I have asked for an unsupported version (unsupported by this program so far)
-  NS_ASSERT(false);  
+  NS_FATAL_ERROR ("unsupported configuration");  
 }
 
 // returns
@@ -335,38 +371,38 @@ ns3::WifiPhyStandard convertVersionToStandard (std::string my_version80211) {
 std::string bandsSupportedBySTA(int numberWiFiCards, std::string version80211primary, std::string version80211secondary) {
   if (numberWiFiCards == 1) {
     // single WiFi card
-    return getWirelessBandOfStandard(convertVersionToStandard(version80211primary));
+    return getWirelessBandOfVersion(version80211primary);
   }
   else if (numberWiFiCards == 2) {
     // two WiFi cards
-    if (getWirelessBandOfStandard(convertVersionToStandard(version80211primary)) == "5 GHz" ) {
-      if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "2.4 GHz" ) {
+    if (getWirelessBandOfVersion(version80211primary) == "5 GHz" ) {
+      if (getWirelessBandOfVersion(version80211secondary) == "2.4 GHz" ) {
         return "both"; // both bands are supported by the STA
       }
-      else if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "5 GHz" ) {
+      else if (getWirelessBandOfVersion(version80211secondary) == "5 GHz" ) {
         std::cout << "ERROR: both interfaces of the STA are in the same band - "
                   << "FINISHING SIMULATION"
                   << std::endl;
-        NS_ASSERT(false); // both interfaces of the STA are in the same band
+        NS_FATAL_ERROR ("unsupported configuration"); // both interfaces of the STA are in the same band
         return "";
       }
     }
-    else if (getWirelessBandOfStandard(convertVersionToStandard(version80211primary)) == "2.4 GHz" ) {
-      if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "5 GHz" ) {
+    else if (getWirelessBandOfVersion(version80211primary) == "2.4 GHz" ) {
+      if (getWirelessBandOfVersion(version80211secondary) == "5 GHz" ) {
         return "both"; // both bands are supported by the STA
       }
-      else if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "2.4 GHz" ) {
+      else if (getWirelessBandOfVersion(version80211secondary) == "2.4 GHz" ) {
         std::cout << "ERROR: both interfaces of the STA are in the same band - "
                   << "FINISHING SIMULATION"
                   << std::endl;
-        NS_ASSERT(false); // both interfaces of the STA are in the same band
+        NS_FATAL_ERROR ("unsupported configuration"); // both interfaces of the STA are in the same band
         return "";
       }
     }
   }
   else {
     // only 2 wireless cards are supported so far
-    NS_ASSERT(false);
+    NS_FATAL_ERROR ("unsupported configuration");
     return "";
   }
   return "";
@@ -380,38 +416,38 @@ std::string bandsSupportedBySTA(int numberWiFiCards, std::string version80211pri
 std::string bandsSupportedByTheAPs(int numberAPsSamePlace, std::string version80211primary, std::string version80211secondary) {
   if (numberAPsSamePlace == 1) {
     // single WiFi card
-    return getWirelessBandOfStandard(convertVersionToStandard(version80211primary));
+    return getWirelessBandOfVersion(version80211primary);
   }
   else if (numberAPsSamePlace == 2) {
     // two WiFi cards
-    if (getWirelessBandOfStandard(convertVersionToStandard(version80211primary)) == "5 GHz" ) {
-      if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "2.4 GHz" ) {
+    if (getWirelessBandOfVersion(version80211primary) == "5 GHz" ) {
+      if (getWirelessBandOfVersion(version80211secondary) == "2.4 GHz" ) {
         return "both"; // both bands are supported by the AP
       }
-      else if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "5 GHz" ) {
+      else if (getWirelessBandOfVersion(version80211secondary) == "5 GHz" ) {
         std::cout << "ERROR: both interfaces of the AP are in the same band - "
                   << "FINISHING SIMULATION"
                   << std::endl;
-        NS_ASSERT(false); // both interfaces of the AP are in the same band
+        NS_FATAL_ERROR ("unsupported configuration"); // both interfaces of the AP are in the same band
         return "";
       }
     }
-    else if (getWirelessBandOfStandard(convertVersionToStandard(version80211primary)) == "2.4 GHz" ) {
-      if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "5 GHz" ) {
+    else if (getWirelessBandOfVersion(version80211primary) == "2.4 GHz" ) {
+      if (getWirelessBandOfVersion(version80211secondary) == "5 GHz" ) {
         return "both"; // both bands are supported by the AP
       }
-      else if (getWirelessBandOfStandard(convertVersionToStandard(version80211secondary)) == "2.4 GHz" ) {
+      else if (getWirelessBandOfVersion(version80211secondary) == "2.4 GHz" ) {
         std::cout << "ERROR: both interfaces of the AP are in the same band - "
                   << "FINISHING SIMULATION"
                   << std::endl;
-        NS_ASSERT(false); // both interfaces of the AP are in the same band
+        NS_FATAL_ERROR ("unsupported configuration"); // both interfaces of the AP are in the same band
         return "";
       }
     }
   }
   else {
     // only 2 wireless cards are supported so far
-    NS_ASSERT(false);
+    NS_FATAL_ERROR ("unsupported configuration");
     return "";
   }
   return "";
@@ -432,11 +468,11 @@ void ChangeFrequencyLocal ( NetDeviceContainer deviceslink, uint8_t channel, uin
 
     Ptr<WifiNetDevice> wifidevice = DynamicCast<WifiNetDevice> (deviceslink.Get(i));
 
-    if (wifidevice == 0)
+    if (wifidevice == nullptr)
       std::cout << "[ChangeFrequencyLocal]\tWARNING: wifidevice IS NULL" << '\n';
 
     //Ptr<WifiPhy> phy0;
-    //phy0->SetChannelNumber (channel); //https://www.nsnam.org/doxygen/classns3_1_1_wifi_phy.html#a2d13cf6ae4c185cae8516516afe4a32a
+    //phy0->SetAttribute ("ChannelSettings", StringValue (ChannelSettingsStr (channel))); // ns-3.48 //https://www.nsnam.org/doxygen/classns3_1_1_wifi_phy.html#a2d13cf6ae4c185cae8516516afe4a32a
 
     // YansWifiPhy
     if (mywifiModel == 0) {
@@ -451,7 +487,7 @@ void ChangeFrequencyLocal ( NetDeviceContainer deviceslink, uint8_t channel, uin
       }
       else {
         // as the STA is NOT switching its channel automatically, I do it
-        phy0->SetChannelNumber (channel);
+        phy0->SetAttribute ("ChannelSettings", StringValue (ChannelSettingsStr (channel))); // ns-3.48
 
         if (myverbose > 1)
           std::cout << Simulator::Now().GetSeconds()
@@ -487,7 +523,7 @@ void ChangeFrequencyLocal ( NetDeviceContainer deviceslink, uint8_t channel, uin
       }
       else {
         // as the STA is NOT switching its channel automatically, I do it
-        phy0->SetChannelNumber (channel);
+        phy0->SetAttribute ("ChannelSettings", StringValue (ChannelSettingsStr (channel))); // ns-3.48
 
         if (myverbose > 1)
           std::cout << Simulator::Now().GetSeconds()
@@ -534,7 +570,7 @@ static void PrintArpCache (Ptr <Node> node, Ptr <NetDevice> nd/*, Ptr <Ipv4Inter
 
   // Get an interactor to Ipv4L3Protocol instance
    Ptr<Ipv4L3Protocol> ip = node->GetObject<Ipv4L3Protocol> ();
-   NS_ASSERT(ip !=0);
+   NS_ASSERT(ip != nullptr);
 
   // Get interfaces list from Ipv4L3Protocol iteractor
   ObjectVectorValue interfaces;
@@ -547,14 +583,14 @@ static void PrintArpCache (Ptr <Node> node, Ptr <NetDevice> nd/*, Ptr <Ipv4Inter
 
     // Get an interactor to Ipv4L3Protocol instance
     Ptr<Ipv4Interface> ipIface = (j->second)->GetObject<Ipv4Interface> ();
-    NS_ASSERT(ipIface != 0);
+    NS_ASSERT(ipIface != nullptr);
 
     std::cout << "Interface #" << l << " IP address" <<  /*<< */'\n';
     l++;
 
     // Get interfaces list from Ipv4L3Protocol iteractor
     Ptr<NetDevice> device = ipIface->GetDevice();
-    NS_ASSERT(device != 0);
+    NS_ASSERT(device != nullptr);
 
     if (device == nd) {
     // Get MacAddress assigned to this device
@@ -605,7 +641,7 @@ void emtpyArpCache(Ptr <Node> mynode, uint32_t myverbose)
   Ptr<Ipv4L3Protocol> ip = mynode->GetObject<Ipv4L3Protocol> ();
 
   // do it only if the node has IP
-  if ( ip != 0 ) {
+  if ( ip != nullptr ) {
     ObjectVectorValue interfaces;
     ip->GetAttribute("InterfaceList", interfaces);
 
@@ -616,7 +652,7 @@ void emtpyArpCache(Ptr <Node> mynode, uint32_t myverbose)
 
       // Get interfaces list from Ipv4L3Protocol iteractor
       Ptr<NetDevice> device = ipIface->GetDevice();
-      NS_ASSERT(device != 0);
+      NS_ASSERT(device != nullptr);
 
       arp->SetDevice (device, ipIface); // https://www.nsnam.org/doxygen/classns3_1_1_arp_cache.html#details
       //ipIface->SetAttribute("ArpCache", PointerValue(arp));
@@ -657,7 +693,7 @@ void modifyArpParams(Ptr <Node> mynode, double aliveTimeout, uint32_t myverbose)
   Ptr<Ipv4L3Protocol> ip = mynode->GetObject<Ipv4L3Protocol> ();
 
   // do it only if the node has IP
-  if ( ip != 0 ) {
+  if ( ip != nullptr ) {
     ObjectVectorValue interfaces;
     ip->GetAttribute("InterfaceList", interfaces);
 
@@ -668,7 +704,7 @@ void modifyArpParams(Ptr <Node> mynode, double aliveTimeout, uint32_t myverbose)
 
       // Get interfaces list from Ipv4L3Protocol iteractor
       Ptr<NetDevice> device = ipIface->GetDevice();
-      NS_ASSERT(device != 0);
+      NS_ASSERT(device != nullptr);
 
       arp->SetDevice (device, ipIface); // https://www.nsnam.org/doxygen/classns3_1_1_arp_cache.html#details
       //ipIface->SetAttribute("ArpCache", PointerValue(arp));
@@ -726,7 +762,7 @@ void infoArpCache(Ptr <Node> mynode, uint32_t myverbose)
   // Create ARP Cache object
   Ptr<ArpCache> arp = CreateObject<ArpCache> ();
   Ptr<Ipv4L3Protocol> ip = mynode->GetObject<Ipv4L3Protocol> ();
-  if (ip!=0) {
+  if (ip != nullptr) {
     std::cout << Simulator::Now().GetSeconds() << '\t'
               << "[infoArpCache] Arp parameters of Node #" << mynode->GetId() 
               << '\n';
@@ -741,7 +777,7 @@ void infoArpCache(Ptr <Node> mynode, uint32_t myverbose)
 
       // Get interfaces list from Ipv4L3Protocol iteractor
       Ptr<NetDevice> device = ipIface->GetDevice();
-      NS_ASSERT(device != 0);
+      NS_ASSERT(device != nullptr);
 
       arp->SetDevice (device, ipIface); // https://www.nsnam.org/doxygen/classns3_1_1_arp_cache.html#details
       //ipIface->SetAttribute("ArpCache", PointerValue(arp));
@@ -792,7 +828,7 @@ void PopulateArpCache (uint32_t nodenumber, Ptr <Node> mynode)
     // Get an interactor to Ipv4L3Protocol instance
 
     Ptr<Ipv4L3Protocol> ip = mynode->GetObject<Ipv4L3Protocol> ();
-    NS_ASSERT(ip !=0);
+    NS_ASSERT(ip != nullptr);
 
     // Get interfaces list from Ipv4L3Protocol iteractor
     ObjectVectorValue interfaces;
@@ -802,11 +838,11 @@ void PopulateArpCache (uint32_t nodenumber, Ptr <Node> mynode)
     for(ObjectVectorValue::Iterator j = interfaces.Begin(); j !=interfaces.End (); j ++) {
       // Get an interactor to Ipv4L3Protocol instance
       Ptr<Ipv4Interface> ipIface = (j->second)->GetObject<Ipv4Interface> ();
-      NS_ASSERT(ipIface != 0);
+      NS_ASSERT(ipIface != nullptr);
 
       // Get interfaces list from Ipv4L3Protocol iteractor
       Ptr<NetDevice> device = ipIface->GetDevice();
-      NS_ASSERT(device != 0);
+      NS_ASSERT(device != nullptr);
 
       // Get MacAddress assigned to this device
       Mac48Address addr = Mac48Address::ConvertFrom(device->GetAddress ());
@@ -850,7 +886,7 @@ void PopulateArpCache (uint32_t nodenumber, Ptr <Node> mynode)
     {
 
       Ptr<Ipv4L3Protocol> ip = (*i)->GetObject<Ipv4L3Protocol> ();
-      if (ip!=0) {
+      if (ip != nullptr) {
         std::cout << "[PopulateArpCache] Adding the Arp Cache to Node #" << nodenumber << '\n';
 
         ObjectVectorValue interfaces;
@@ -861,7 +897,7 @@ void PopulateArpCache (uint32_t nodenumber, Ptr <Node> mynode)
 
           // Get interfaces list from Ipv4L3Protocol iteractor
           Ptr<NetDevice> device = ipIface->GetDevice();
-          NS_ASSERT(device != 0);
+          NS_ASSERT(device != nullptr);
 
           arp->SetDevice (device, ipIface); // https://www.nsnam.org/doxygen/classns3_1_1_arp_cache.html#details
 
@@ -888,7 +924,7 @@ void ModifyAmpdu (uint32_t nodeNumber, uint32_t ampduValue, uint32_t myverbose)
 {
   // These are the attributes of regular-wifi-mac: https://www.nsnam.org/doxygen/regular-wifi-mac_8cc_source.html
   // You have to build a line like this (e.g. for node 0):
-  // Config::Set("/NodeList/0/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BE_MaxAmpduSize", UintegerValue(ampduValue));
+  // Config::Set("/NodeList/0/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_MaxAmpduSize", UintegerValue(ampduValue));
   // There are 4 queues: VI, VO, BE and BK
 
   // FIXME: Check if I only have to modify the parameters of all the devices (*), or only some of them.
@@ -897,33 +933,37 @@ void ModifyAmpdu (uint32_t nodeNumber, uint32_t ampduValue, uint32_t myverbose)
   std::ostringstream auxString;
 
   // VI queue
-  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/VI_MaxAmpduSize";
+  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/VI_MaxAmpduSize";
   // std::cout << auxString.str() << '\n';
-  Config::Set(auxString.str(),  UintegerValue(ampduValue));
+  if (!Config::SetFailSafe (auxString.str (), UintegerValue (ampduValue)))
+    NS_FATAL_ERROR ("[ModifyAmpdu] no object matched " << auxString.str ());
 
   // clean the string
   auxString.str(std::string());
 
   // VO queue
-  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/VO_MaxAmpduSize"; 
+  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/VO_MaxAmpduSize"; 
   // std::cout << auxString.str() << '\n';
-  Config::Set(auxString.str(),  UintegerValue(ampduValue));
+  if (!Config::SetFailSafe (auxString.str (), UintegerValue (ampduValue)))
+    NS_FATAL_ERROR ("[ModifyAmpdu] no object matched " << auxString.str ());
 
   // clean the string
   auxString.str(std::string());
 
   // BE queue
-  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BE_MaxAmpduSize"; 
+  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_MaxAmpduSize"; 
   // std::cout << auxString.str() << '\n';
-  Config::Set(auxString.str(),  UintegerValue(ampduValue));
+  if (!Config::SetFailSafe (auxString.str (), UintegerValue (ampduValue)))
+    NS_FATAL_ERROR ("[ModifyAmpdu] no object matched " << auxString.str ());
 
   // clean the string
   auxString.str(std::string());
 
   // BK queue
-  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BK_MaxAmpduSize"; 
+  auxString << "/NodeList/" << nodeNumber << "/DeviceList/*/$ns3::WifiNetDevice/Mac/BK_MaxAmpduSize"; 
   //std::cout << auxString.str() << '\n';
-  Config::Set(auxString.str(),  UintegerValue(ampduValue));  
+  if (!Config::SetFailSafe (auxString.str (), UintegerValue (ampduValue)))
+    NS_FATAL_ERROR ("[ModifyAmpdu] no object matched " << auxString.str ());  
 
   if ( myverbose > 1 )
     std::cout << Simulator::Now().GetSeconds()
@@ -1179,7 +1219,7 @@ AP_recordVector AP_vector;
 AP_record::AP_record ()
 {
   apId = 0;
-  apMac = "02-06-00:00:00:00:00:00";
+  apMac = NoApMacStr ();
   apMaxSizeAmpdu = 0;
 }
 
@@ -1307,7 +1347,7 @@ nearestAp (NodeContainer APs, Ptr<Node> mySTA, int myverbose, std::string freque
     indexAP++;
   }
 
-  if(nearest!=NULL) {
+  if(nearest != nullptr) {
     NS_ASSERT(channelNearestAP!=0);
     if (frequencyBand != "both") {
      //if (VERBOSE_FOR_DEBUG > 0)
@@ -1347,7 +1387,7 @@ nearestAp (NodeContainer APs, Ptr<Node> mySTA, int myverbose, std::string freque
                 << "- FINISHING SIMULATION"
                 << std::endl;      
     }
-    NS_ASSERT(false);
+    NS_FATAL_ERROR ("unsupported configuration");
   }
   if (VERBOSE_FOR_DEBUG > 0)
     std::cout << Simulator::Now().GetSeconds()
@@ -1653,7 +1693,7 @@ GetChannelOfAnSTA (uint16_t id)
         // auxiliar string
         std::ostringstream auxString;
         // create a string with the MAC
-        auxString << "02-06-" << (*index)->GetMacOfitsAP();
+        auxString << Address ((*index)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
         std::string myaddress = auxString.str();
 
         if (VERBOSE_FOR_DEBUG > 0)
@@ -1669,7 +1709,7 @@ GetChannelOfAnSTA (uint16_t id)
                     << std::endl;
 
         // Get the wireless channel of the AP with the corresponding address
-        NS_ASSERT(myaddress!="02-06-00:00:00:00:00:00");
+        NS_ASSERT(myaddress!=NoApMacStr ());
         channel = GetAP_WirelessChannel (GetAnAP_Id(myaddress), 0);      
       }
     }
@@ -1693,18 +1733,18 @@ ReportChannel (double period, uint16_t id, int myverbose)
         // auxiliar string
         std::ostringstream auxString;
         // create a string with the MAC
-        auxString << "02-06-" << (*index)->GetMacOfitsAP();
+        auxString << Address ((*index)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
         std::string myaddress = auxString.str();
         NS_ASSERT(!myaddress.empty());
 
-        if (myaddress=="02-06-00:00:00:00:00:00") {
+        if (myaddress==NoApMacStr ()) {
           std::cout << Simulator::Now().GetSeconds()
                     << "\t[ReportChannel] STA #" << id 
                     << " Not associated to any AP"
                     << std::endl;          
         }
         else {
-          NS_ASSERT(myaddress!="02-06-00:00:00:00:00:00");
+          NS_ASSERT(myaddress!=NoApMacStr ());
           std::cout << Simulator::Now().GetSeconds()
                     << "\t[ReportChannel] STA #" << id 
                     << " Associated to AP#" << GetAnAP_Id(myaddress)
@@ -1731,7 +1771,7 @@ List_STA_record ()
       // auxiliar string
       std::ostringstream auxString;
       // create a string with the MAC
-      auxString << "02-06-" << (*index)->GetMacOfitsAP();
+      auxString << Address ((*index)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
       std::string myaddress = auxString.str();
       NS_ASSERT(!myaddress.empty());
 
@@ -1762,7 +1802,7 @@ List_STA_record ()
 void
 STA_record::SetAssoc (std::string context, Mac48Address AP_MAC_address)
 {
-  // 'context' is something like "/NodeList/9/DeviceList/1/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/Assoc"
+  // 'context' is something like "/NodeList/9/DeviceList/1/$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/Assoc"
   if(VERBOSE_FOR_DEBUG > 0)
     std::cout << "\t[SetAssoc] context: " << context << std::endl;
   if(VERBOSE_FOR_DEBUG > 0)
@@ -1780,7 +1820,7 @@ STA_record::SetAssoc (std::string context, Mac48Address AP_MAC_address)
   // auxiliar string
   std::ostringstream auxString;
   // create a string with the MAC
-  auxString << "02-06-" << AP_MAC_address;
+  auxString << Address (AP_MAC_address); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
   std::string myaddress = auxString.str();
 
   NS_ASSERT(!myaddress.empty());
@@ -1957,7 +1997,7 @@ STA_record::SetAssoc (std::string context, Mac48Address AP_MAC_address)
 void
 STA_record::UnsetAssoc (std::string context, Mac48Address AP_MAC_address)
 {
-  // 'context' is something like "/NodeList/9/DeviceList/1/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/Assoc"
+  // 'context' is something like "/NodeList/9/DeviceList/1/$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/Assoc"
 
   // update the data in the STA_record structure
   assoc = false;
@@ -1966,7 +2006,7 @@ STA_record::UnsetAssoc (std::string context, Mac48Address AP_MAC_address)
   // auxiliar string
   std::ostringstream auxString;
   // create a string with the MAC
-  auxString << "02-06-" << AP_MAC_address;
+  auxString << Address (AP_MAC_address); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
   std::string myaddress = auxString.str();
   NS_ASSERT(!myaddress.empty());
 
@@ -2383,7 +2423,7 @@ SavePositionSTA (double period, Ptr<Node> node, NodeContainer myApNodes, uint16_
           // auxiliar string
           std::ostringstream auxString;
           // create a string with the MAC
-          auxString << "02-06-" << (*index)->GetMacOfitsAP();
+          auxString << Address ((*index)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
           MACaddressAP = auxString.str();
           if (VERBOSE_FOR_DEBUG > 0)
             std::cout << Simulator::Now ().GetSeconds() << "\t[SavePositionSTA] STA with id " << (*index)->GetStaid () << " is associated to the AP with MAC " << MACaddressAP << std::endl;
@@ -2562,7 +2602,7 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
         // auxiliar string
         std::ostringstream auxString;
         // create a string with the MAC
-        auxString << "02-06-" << (*indexSTA)->GetMacOfitsAP();
+        auxString << Address ((*indexSTA)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
         std::string addressOfTheAPwhereThisSTAis = auxString.str();
         NS_ASSERT(!addressOfTheAPwhereThisSTAis.empty());
 
@@ -2965,7 +3005,7 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
             // auxiliar string
             std::ostringstream auxString;
             // create a string with the MAC
-            auxString << "02-06-" << (*indexSTA)->GetMacOfitsAP();
+            auxString << Address ((*indexSTA)->GetMacOfitsAP()); // ns-3.48: same format as the AP record (Address type id differs from ns-3.30)
             std::string addressOfTheAPwhereThisSTAis = auxString.str();
 
             // if the STA is associated to this AP
@@ -3477,6 +3517,7 @@ int main (int argc, char *argv[]) {
   cmd.AddValue ("version80211secondary", "Version of 802.11 in secondary APs and in the secondary device of STAs: '11n5' (default); '11ac'; '11n2.4'; '11g'; '11a'", version80211secondary);
 
   cmd.Parse (argc, argv);
+  g_channelWidth = channelWidth; // ns-3.48 port
 
 
   // Variable to store the last AMPDU value for which latency was below the limit
@@ -4414,11 +4455,11 @@ int main (int argc, char *argv[]) {
   // it is described in this paper: http://cutebugs.net/files/wns2-yans.pdf
   // The yans name stands for "Yet Another Network Simulator"
   //YansWifiChannelHelper wifiChannel = YansWifiChannelHelper::Default ();
-  YansWifiPhyHelper wifiPhy = YansWifiPhyHelper::Default ();
+  YansWifiPhyHelper wifiPhy; // ns-3.48: YansWifiPhyHelper::Default() removed
 
   // if wifiModel == 1
   // we use the spectrumWifi model
-  SpectrumWifiPhyHelper spectrumPhy = SpectrumWifiPhyHelper::Default ();
+  SpectrumWifiPhyHelper spectrumPhy; // ns-3.48: SpectrumWifiPhyHelper::Default() removed
 
   if (wifiModel == 0) {
 
@@ -4440,9 +4481,12 @@ int main (int argc, char *argv[]) {
     // Experiences:   at 5GHz,  with '-15' the coverage is less than 70 m
     //                          with '-10' the coverage is about 70 m (recommended for an array with distance 50m between APs)
 
-    wifiPhy.Set ("ShortGuardEnabled", BooleanValue (false));
-    wifiPhy.Set ("ChannelWidth", UintegerValue (channelWidth));
-    //wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNo)); //This is done later
+    // ns-3.48: attribute removed; short GI is disabled by default (HtConfiguration)
+
+    // wifiPhy.Set ("ShortGuardEnabled", BooleanValue (false));
+    // ns-3.48: read-only attribute; width is set through "ChannelSettings"
+    // wifiPhy.Set ("ChannelWidth", UintegerValue (channelWidth));
+    //wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNo))); //This is done later
 
     wifiPhy.SetPcapDataLinkType (YansWifiPhyHelper::DLT_IEEE802_11_RADIO);
 
@@ -4470,7 +4514,7 @@ int main (int argc, char *argv[]) {
     // this should work for ns3-30 (but it does not work):
     //Config::SetDefault ("ns3::WifiPhy::SetCcaEdThreshold", DoubleValue (-95.0));
     // The energy of a received signal should be higher than this threshold (dbm) to allow the PHY layer to detect the signal.
-    Config::SetDefault ("ns3::WifiPhy::EnergyDetectionThreshold", DoubleValue (-95.0));
+    Config::SetDefault ("ns3::WifiPhy::RxSensitivity", DoubleValue (-95.0));
     
 
     // Use multimodel spectrum channel, https://www.nsnam.org/doxygen/classns3_1_1_multi_model_spectrum_channel.html
@@ -4508,8 +4552,11 @@ int main (int argc, char *argv[]) {
     spectrumPhy.Set ("TxPowerStart", DoubleValue (powerLevel));  // a value of '1' means 1 dBm (1.26 mW)
     spectrumPhy.Set ("TxPowerEnd", DoubleValue (powerLevel));
 
-    spectrumPhy.Set ("ShortGuardEnabled", BooleanValue (false));
-    spectrumPhy.Set ("ChannelWidth", UintegerValue (channelWidth));
+    // ns-3.48: attribute removed; short GI is disabled by default (HtConfiguration)
+
+    // spectrumPhy.Set ("ShortGuardEnabled", BooleanValue (false));
+    // ns-3.48: read-only attribute; width is set through "ChannelSettings"
+    // spectrumPhy.Set ("ChannelWidth", UintegerValue (channelWidth));
 
     Ptr<SpectrumWifiPhy> m_phy;
     m_phy = CreateObject<SpectrumWifiPhy> ();
@@ -4798,12 +4845,12 @@ int main (int argc, char *argv[]) {
         // primary AP
         if (wifiModel == 0) { 
           // Yans wifi
-          wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisAP));
+          wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisAP)));
           apWiFiDev = wifi.Install (wifiPhy, wifiMacPrimary, apNodes.Get (i + (j*number_of_APs)));
         }
         else {
           // spectrumwifi
-          spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisAP));
+          spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisAP)));
           apWiFiDev = wifi.Install (spectrumPhy, wifiMacPrimary, apNodes.Get (i + (j*number_of_APs)));
         }           
       }
@@ -4811,12 +4858,12 @@ int main (int argc, char *argv[]) {
         // secondary AP
         if (wifiModel == 0) { 
           // Yans wifi
-          wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisAP));
+          wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisAP)));
           apWiFiDev = wifi.Install (wifiPhy, wifiMacSecondary, apNodes.Get (i + (j*number_of_APs)));
         }
         else {
           // spectrumwifi
-          spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisAP));
+          spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisAP)));
           apWiFiDev = wifi.Install (spectrumPhy, wifiMacSecondary, apNodes.Get (i + (j*number_of_APs)));
         } 
       }
@@ -5027,7 +5074,7 @@ int main (int argc, char *argv[]) {
           // look for the nearest AP in the 2.4GHz band           
           myNearestAp2GHz = nearestAp (apNodes, staNodes.Get(i), verboseLevel, "2.4 GHz");
 
-          if (getWirelessBandOfStandard(convertVersionToStandard(version80211primary)) == "5GHz") {
+          if (getWirelessBandOfVersion(version80211primary) == "5GHz") {
             // the primary card is in 5GHz and the secondary in 2.4GHz
             myNearestApId = (myNearestAp5GHz)->GetId();
             ChannelNoForThisSTA = GetAP_WirelessChannel (myNearestApId, verboseLevel);
@@ -5050,7 +5097,7 @@ int main (int argc, char *argv[]) {
             // install the wifi Phy and MAC in both cards of the STAs
             // Yans wifi
             if (wifiModel == 0) {
-              wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+              wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
               //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
               staDev = wifi.Install (wifiPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5063,7 +5110,7 @@ int main (int argc, char *argv[]) {
 
               if (numberWiFiDevicesInSTAs==2) {
                 // this installs a second WiFi card in the STA. It will have another MAC address
-                wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+                wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
                 //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
               
                 staDevSecondary = wifiSecondary.Install (wifiPhy, wifiMacSecondary, staNodes.Get(i));
@@ -5077,7 +5124,7 @@ int main (int argc, char *argv[]) {
             }
             else {
               // spectrumwifi
-              spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+              spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
               //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
               staDev = wifi.Install (spectrumPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5089,7 +5136,7 @@ int main (int argc, char *argv[]) {
               }
 
               if (numberWiFiDevicesInSTAs==2) {
-                spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+                spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
                 // this installs a second WiFi card in the STA. It will have another MAC address
                 staDevSecondary = wifiSecondary.Install (spectrumPhy, wifiMacSecondary, staNodes.Get (i));
                 if (verboseLevel >= 2) {
@@ -5125,7 +5172,7 @@ int main (int argc, char *argv[]) {
             // install the wifi Phy and MAC in both cards of the STAs
             // Yans wifi
             if (wifiModel == 0) {
-              wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+              wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
               //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
               staDev = wifi.Install (wifiPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5138,7 +5185,7 @@ int main (int argc, char *argv[]) {
 
               if (numberWiFiDevicesInSTAs==2) {
                 // this installs a second WiFi card in the STA. It will have another MAC address
-                wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+                wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
                 //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
               
                 staDevSecondary = wifiSecondary.Install (wifiPhy, wifiMacSecondary, staNodes.Get(i));
@@ -5152,7 +5199,7 @@ int main (int argc, char *argv[]) {
             }
             else {
               // spectrumwifi
-              spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+              spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
               //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
               staDev = wifi.Install (spectrumPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5164,7 +5211,7 @@ int main (int argc, char *argv[]) {
               }
 
               if (numberWiFiDevicesInSTAs==2) {
-                spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+                spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
                 // this installs a second WiFi card in the STA. It will have another MAC address
                 staDevSecondary = wifiSecondary.Install (spectrumPhy, wifiMacSecondary, staNodes.Get (i));
                 if (verboseLevel >= 2) {
@@ -5209,7 +5256,7 @@ int main (int argc, char *argv[]) {
         // install the wifi Phy and MAC in both cards of the STAs
         // Yans wifi
         if (wifiModel == 0) {
-          wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+          wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
           //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
           staDev = wifi.Install (wifiPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5223,7 +5270,7 @@ int main (int argc, char *argv[]) {
           // secondary card
           NS_ASSERT (numberWiFiDevicesInSTAs==2);
           // this installs a second WiFi card in the STA. It will have another MAC address
-          wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+          wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
           //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
         
           staDevSecondary = wifiSecondary.Install (wifiPhy, wifiMacSecondary, staNodes.Get(i));
@@ -5236,7 +5283,7 @@ int main (int argc, char *argv[]) {
         }
         else {
           // spectrumwifi
-          spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+          spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
           //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
           staDev = wifi.Install (spectrumPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5249,7 +5296,7 @@ int main (int argc, char *argv[]) {
 
           // secondary card
           NS_ASSERT (numberWiFiDevicesInSTAs==2);
-          spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTASecondary));
+          spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTASecondary)));
           // this installs a second WiFi card in the STA. It will have another MAC address
           staDevSecondary = wifiSecondary.Install (spectrumPhy, wifiMacSecondary, staNodes.Get (i));
           if (verboseLevel >= 2) {
@@ -5296,13 +5343,13 @@ int main (int argc, char *argv[]) {
                       << ": " <<  bandsSupportedByThisSTA
                       << ". But APs only support band " << bandsSupportedByAPs
                       << std::endl;                
-            NS_ASSERT(false);
+            NS_FATAL_ERROR ("unsupported configuration");
           }
         }
         // install the wifi Phy and MAC in the card of the STAs
         // Yans wifi
         if (wifiModel == 0) {
-          wifiPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+          wifiPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
           //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
           staDev = wifi.Install (wifiPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5315,7 +5362,7 @@ int main (int argc, char *argv[]) {
         }
         else {
           // spectrumwifi
-          spectrumPhy.Set ("ChannelNumber", UintegerValue(ChannelNoForThisSTA));
+          spectrumPhy.Set ("ChannelSettings", StringValue (ChannelSettingsStr (ChannelNoForThisSTA)));
           //AP_vector[i]->setWirelessChannel(ChannelNoForThisSTA);
 
           staDev = wifi.Install (spectrumPhy, wifiMacPrimary, staNodes.Get(i));
@@ -5338,9 +5385,9 @@ int main (int argc, char *argv[]) {
 
       // even STAs
       if ( i % 2 == 0 ) {
-        wifi.SetStandard (WIFI_PHY_STANDARD_80211g);
+        wifi.SetStandard (WIFI_STANDARD_80211g);
         if (numberWiFiDevicesInSTAs==2)
-          wifiSecondary.SetStandard (WIFI_PHY_STANDARD_80211n_5GHZ);
+          wifiSecondary.SetStandard (WIFI_STANDARD_80211n);
 
         ChannelNoForThisSTA = 1;
         //ChannelNoForThisSTA = availableChannels[0];
@@ -5350,9 +5397,9 @@ int main (int argc, char *argv[]) {
 
       // odd STAs
       else if ( i % 2 == 1 ) {
-        wifi.SetStandard (WIFI_PHY_STANDARD_80211n_5GHZ);        
+        wifi.SetStandard (WIFI_STANDARD_80211n);        
         if (numberWiFiDevicesInSTAs==2)
-          wifiSecondary.SetStandard (WIFI_PHY_STANDARD_80211g);
+          wifiSecondary.SetStandard (WIFI_STANDARD_80211g);
 
         ChannelNoForThisSTA = availableChannels[1];
         if (numberWiFiDevicesInSTAs==2)
@@ -5529,11 +5576,11 @@ int main (int argc, char *argv[]) {
       // see trace sources in https://www.nsnam.org/doxygen/classns3_1_1_sta_wifi_mac.html#details
       // trace association. Taken from https://github.com/MOSAIC-UA/802.11ah-ns3/blob/master/ns-3/scratch/s1g-mac-test.cc
       // some info here: https://groups.google.com/forum/#!msg/ns-3-users/zqdnCxzYGM8/MdCshgYKAgAJ
-      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/Assoc", 
+      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/Assoc", 
                         MakeCallback (&STA_record::SetAssoc, m_STArecord));
 
       // Set a callback function to be called each time a STA gets de-associated from an AP
-      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/DeAssoc", 
+      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/DeAssoc", 
                         MakeCallback (&STA_record::UnsetAssoc, m_STArecord));
     //}
 
@@ -5602,11 +5649,11 @@ int main (int argc, char *argv[]) {
       // see trace sources in https://www.nsnam.org/doxygen/classns3_1_1_sta_wifi_mac.html#details
       // trace association. Taken from https://github.com/MOSAIC-UA/802.11ah-ns3/blob/master/ns-3/scratch/s1g-mac-test.cc
       // some info here: https://groups.google.com/forum/#!msg/ns-3-users/zqdnCxzYGM8/MdCshgYKAgAJ
-      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*//*$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/Assoc", 
+      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*//*$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/Assoc", 
                         MakeCallback (&STA_record::SetAssoc, m_STArecord));
 
       // Set a callback function to be called each time a STA gets de-associated from an AP
-      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*//*$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/$ns3::StaWifiMac/DeAssoc", 
+      Config::Connect ( "/NodeList/"+strSTA+"/DeviceList/*//*$ns3::WifiNetDevice/Mac/$ns3::StaWifiMac/DeAssoc", 
                         MakeCallback (&STA_record::UnsetAssoc, m_STArecord));
     //}
 
@@ -5617,7 +5664,8 @@ int main (int argc, char *argv[]) {
 
 
   // Set channel width of all the devices
-  Config::Set ("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/ChannelWidth", UintegerValue (channelWidth));
+  // ns-3.48: read-only attribute; width is set through "ChannelSettings"
+  // Config::Set ("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/ChannelWidth", UintegerValue (channelWidth));
 
 
 
@@ -5966,15 +6014,19 @@ int main (int argc, char *argv[]) {
 
     InetSocketAddress destAddress (myaddress, port);
 
+    uint8_t destTos = 0; // ns-3.48: InetSocketAddress::SetTos() removed, see "Tos" below
+
     // If priorities ARE NOT enabled, VoIP traffic will have TcpPriorityLevel
     if (prioritiesEnabled == 0) {
-      destAddress.SetTos (TcpPriorityLevel);
+      destTos = TcpPriorityLevel;
     // If priorities ARE enabled, VoIP traffic will have a higher priority (VoIpPriorityLevel)
     } else {
-      destAddress.SetTos (VoIpPriorityLevel);
+      destTos = VoIpPriorityLevel;
     }
 
     myVoipUpClient = UdpClientHelper(destAddress);
+
+    myVoipUpClient.SetAttribute ("Tos", UintegerValue (destTos));
 
     myVoipUpClient.SetAttribute ("MaxPackets", UintegerValue (4294967295u));
     //myVoipUpClient.SetAttribute ("Interval", TimeValue (Time ("0.02")));
@@ -6056,16 +6108,20 @@ int main (int argc, char *argv[]) {
     // GetAddress() will return the address of the UdpServer
 
     InetSocketAddress destAddress (InetSocketAddress (staInterfaces[i].GetAddress(0), port));
+
+    uint8_t destTos = 0; // ns-3.48: InetSocketAddress::SetTos() removed, see "Tos" below
     
     // If priorities ARE NOT enabled, VoIP traffic will have TcpPriorityLevel
     if (prioritiesEnabled == 0) {
-      destAddress.SetTos (TcpPriorityLevel);
+      destTos = TcpPriorityLevel;
     // If priorities ARE enabled, VoIP traffic will have a higher priority (VoIpPriorityLevel)
     } else {
-      destAddress.SetTos (VoIpPriorityLevel);
+      destTos = VoIpPriorityLevel;
     }
 
     myVoipDownClient = UdpClientHelper(destAddress);
+
+    myVoipDownClient.SetAttribute ("Tos", UintegerValue (destTos));
 
     myVoipDownClient.SetAttribute ("MaxPackets", UintegerValue (4294967295u));
     //myVoipDownClient.SetAttribute ("Interval", TimeValue (Time ("0.02"))); //packets/s
@@ -6131,9 +6187,10 @@ int main (int argc, char *argv[]) {
     Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpHighSpeed::GetTypeId ()));
   } 
   else if (TcpVariant.compare ("TcpWestwoodPlus") == 0) {
-    Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpWestwood::GetTypeId ()));
-    Config::SetDefault ("ns3::TcpWestwood::ProtocolType", EnumValue (TcpWestwood::WESTWOODPLUS));
-    Config::SetDefault ("ns3::TcpWestwood::FilterType", EnumValue (TcpWestwood::TUSTIN));
+    Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpWestwoodPlus::GetTypeId ()));
+    // ns-3.48: TcpWestwood was replaced by TcpWestwoodPlus (no ProtocolType)
+    // Config::SetDefault ("ns3::TcpWestwood::ProtocolType", EnumValue (TcpWestwood::WESTWOODPLUS));
+    Config::SetDefault ("ns3::TcpWestwoodPlus::FilterType", EnumValue (TcpWestwoodPlus::TUSTIN));
   } else {
     std::cout << "INPUT PARAMETER ERROR: Bad TCP variant. Supported: TcpNewReno, TcpHighSpeed, TcpWestwoodPlus. Stopping the simulation." << '\n';
     return 0;  
@@ -6178,10 +6235,14 @@ int main (int argc, char *argv[]) {
 
     InetSocketAddress destAddress (InetSocketAddress (myaddress, port));
 
+    uint8_t destTos = 0; // ns-3.48: InetSocketAddress::SetTos() removed, see "Tos" below
+
     // TCP will have TcpPriorityLevel, whether priorities are enabled or not
-    destAddress.SetTos (TcpPriorityLevel);
+    destTos = TcpPriorityLevel;
 
     BulkSendHelper myBulkSendTcpUp ( "ns3::TcpSocketFactory", destAddress);
+
+    myBulkSendTcpUp.SetAttribute ("Tos", UintegerValue (destTos));
 
     // Set the amount of data to send in bytes. Zero is unlimited.
     myBulkSendTcpUp.SetAttribute ("MaxBytes", UintegerValue (0));
@@ -6244,11 +6305,14 @@ int main (int argc, char *argv[]) {
 
     // Install a sender on the sender node
     InetSocketAddress destAddress (InetSocketAddress (staInterfaces[i].GetAddress(0), port ));
+    uint8_t destTos = 0; // ns-3.48: InetSocketAddress::SetTos() removed, see "Tos" below
 
     // TCP will have TcpPriorityLevel, whether priorities are enabled or not
-    destAddress.SetTos (TcpPriorityLevel);
+    destTos = TcpPriorityLevel;
     
     BulkSendHelper myBulkSendTcpDown ( "ns3::TcpSocketFactory", destAddress);
+    
+    myBulkSendTcpDown.SetAttribute ("Tos", UintegerValue (destTos));
 
     // Set the amount of data to send in bytes.  Zero is unlimited.
     myBulkSendTcpDown.SetAttribute ("MaxBytes", UintegerValue (0));
@@ -6363,13 +6427,17 @@ int main (int argc, char *argv[]) {
 
     InetSocketAddress destAddress (InetSocketAddress (staInterfaces[i].GetAddress(0), port));
 
+    uint8_t destTos = 0; // ns-3.48: InetSocketAddress::SetTos() removed, see "Tos" below
+
     if (prioritiesEnabled == 0) {
-      destAddress.SetTos (VideoPriorityLevel);
+      destTos = VideoPriorityLevel;
     } else {
-      destAddress.SetTos (VideoPriorityLevel);
+      destTos = VideoPriorityLevel;
     }
 
-    myVideoDownClient = UdpTraceClientHelper(destAddress, port,"");
+    myVideoDownClient = UdpTraceClientHelper(destAddress, ""); // ns-3.48: destAddress already has the port
+
+    myVideoDownClient.SetAttribute ("Tos", UintegerValue (destTos));
     myVideoDownClient.SetAttribute ("MaxPacketSize", UintegerValue (VideoMaxPacketSize));
     myVideoDownClient.SetAttribute ("TraceLoop", BooleanValue (1));
 
@@ -6533,7 +6601,7 @@ int main (int argc, char *argv[]) {
                           &obtainKPIs,
                           monitor
                           /*, flowmon*/, // FIXME Avoid the use of a global variable 'flowmon'
-                          myFlowStatisticsVoIPUpload,
+                          static_cast<FlowStatistics*> (myFlowStatisticsVoIPUpload),
                           1,
                           verboseLevel,
                           timeMonitorKPIs);
@@ -6543,7 +6611,7 @@ int main (int argc, char *argv[]) {
                           &obtainKPIs,
                           monitor
                           /*, flowmon*/, // FIXME Avoid the use of a global variable 'flowmon'
-                          myFlowStatisticsVoIPDownload,
+                          static_cast<FlowStatistics*> (myFlowStatisticsVoIPDownload),
                           2,
                           verboseLevel,
                           timeMonitorKPIs);
@@ -6553,7 +6621,7 @@ int main (int argc, char *argv[]) {
                           &obtainKPIs,
                           monitor
                           /*, flowmon*/, // FIXME Avoid the use of a global variable 'flowmon'
-                          myFlowStatisticsTCPUpload,
+                          static_cast<FlowStatistics*> (myFlowStatisticsTCPUpload),
                           3,
                           verboseLevel,
                           timeMonitorKPIs);
@@ -6563,7 +6631,7 @@ int main (int argc, char *argv[]) {
                           &obtainKPIs,
                           monitor
                           /*, flowmon*/, // FIXME Avoid the use of a global variable 'flowmon'
-                          myFlowStatisticsTCPDownload,
+                          static_cast<FlowStatistics*> (myFlowStatisticsTCPDownload),
                           4,
                           verboseLevel,
                           timeMonitorKPIs);
@@ -6573,7 +6641,7 @@ int main (int argc, char *argv[]) {
                           &obtainKPIs,
                           monitor
                           /*, flowmon*/, // FIXME Avoid the use of a global variable 'flowmon'
-                          myFlowStatisticsVideoDownload,
+                          static_cast<FlowStatistics*> (myFlowStatisticsVideoDownload),
                           5,
                           verboseLevel,
                           timeMonitorKPIs);
@@ -6662,11 +6730,11 @@ int main (int argc, char *argv[]) {
 // FIXME ***************Trial: Change the parameters of the AP (disable A-MPDU) during the simulation
 // how to change attributes: https://www.nsnam.org/docs/manual/html/attributes.html
 // https://www.nsnam.org/doxygen/regular-wifi-mac_8cc_source.html
-//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/VI_MaxAmpduSize", UintegerValue(0));
-//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/VO_MaxAmpduSize", UintegerValue(0));
-//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BE_MaxAmpduSize", UintegerValue(0));
-//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BK_MaxAmpduSize", UintegerValue(0));
-//Config::Set("/NodeList/0/DeviceList/0/$ns3::WifiNetDevice/Mac/$ns3::RegularWifiMac/BK_MaxAmpduSize", UintegerValue(0));
+//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/VI_MaxAmpduSize", UintegerValue(0));
+//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/VO_MaxAmpduSize", UintegerValue(0));
+//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_MaxAmpduSize", UintegerValue(0));
+//Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BK_MaxAmpduSize", UintegerValue(0));
+//Config::Set("/NodeList/0/DeviceList/0/$ns3::WifiNetDevice/Mac/BK_MaxAmpduSize", UintegerValue(0));
   if(false) {
     for ( uint32_t j = 0 ; j < (number_of_APs * numberAPsSamePlace) ; ++j ) {
       std::cout << "scheculing AMPDU=0 in second 4.0 for node " << j << '\n';

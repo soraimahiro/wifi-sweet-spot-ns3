@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ns-3.48 port: run from anywhere; everything executes in the ns-3 root directory.
+# Configure once with: ./ns3 configure --build-profile=optimized
+cd "$(dirname "$0")/../../.." || exit 1
+
 # before running this, delete the files .txt and *_average.txt
 INIT_FILE_NAME="test525"
 
@@ -31,7 +35,7 @@ for ((i=INIT_NUM_TCP_USERS; i<=UPPER_LIMIT_NUM_TCP_USERS; i=$((${i}+${STEP_NUM_T
 
     echo "$INIT_FILE_NAME $(date) seed: $seed. number of TCP download users $NUMBER_TCP_USERS. number VoIP upload users $NUMBER_VOIP_USERS. Starting..."
 
-	executablename_string=${executablename_string}"scratch/wifi-central-controlled-aggregation_v199b15"
+	executablename_string=${executablename_string}"scratch/wifi-sweet-spot/cc/wifi-central-controlled-aggregation_v199b15.cc"
 
 	parameters_string=${parameters_string}" --simulationTime=60 \
         --numberVoIPupload=$NUMBER_VOIP_USERS \
@@ -91,9 +95,9 @@ for ((i=INIT_NUM_TCP_USERS; i<=UPPER_LIMIT_NUM_TCP_USERS; i=$((${i}+${STEP_NUM_T
 
 
 	# print the command that is to be run. Note that \" means the quotation mark character
-	echo NS_GLOBAL_VALUE=\"RngRun=$seed\" ./waf -d optimized --run \"${executablename_string}${parameters_string}\"
+	echo NS_GLOBAL_VALUE=\"RngRun=$seed\" ./ns3 run \"${executablename_string}${parameters_string}\"
 
 	# run the command
-	NS_GLOBAL_VALUE="RngRun=$seed" ./waf -d optimized --run "${executablename_string}${parameters_string}"
+	NS_GLOBAL_VALUE="RngRun=$seed" ./ns3 run "${executablename_string}${parameters_string}"
   done
 done
