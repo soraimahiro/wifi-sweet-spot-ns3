@@ -3288,7 +3288,7 @@ int main (int argc, char *argv[]) {
   double distance_between_STAs = 0.0;
   double distanceToBorder = 0.0; // It is used for establishing the coordinates of the square where the STA move randomly
 
-  uint32_t number_of_STAs_per_row;
+  uint32_t number_of_STAs_per_row = 0; // ns-3.48 port: was uninitialized (undefined value when not given on the command line)
 
   uint32_t nodeMobility = 0;
   double constantSpeed = 3.5;  // X-axis speed (m/s) in the case the constant speed model is used (https://en.wikipedia.org/wiki/Preferred_walking_speed)
