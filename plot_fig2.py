@@ -12,6 +12,7 @@ Writes:
 Run from the ns-3 root:
   scratch/lab/.venv/bin/python scratch/wifi-sweet-spot/plot_fig2.py
 """
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -33,8 +34,8 @@ OUT_DIR = Path("scratch/wifi-sweet-spot")
 RUNS = ["fig2a", "fig2b", "fig2c"]
 
 
-def read_kpis(name):
-    df = pd.read_csv(f"{name}_seed-2_KPIs.txt", sep="\t")
+def read_kpis(path):
+    df = pd.read_csv(path, sep="\t")
     df.columns = ["t", "flow", "app", "port", "delay", "jitter", "rx", "lost", "thr"]
     df["delay"] = pd.to_numeric(df["delay"], errors="coerce")  # 'nan' when no packets
     df["thr"] = pd.to_numeric(df["thr"], errors="coerce")
@@ -108,14 +109,30 @@ def plot_ampdu():
 
 
 def main():
-    fig, axes = plt.subplots(len(RUNS), 1, figsize=(6, 13))
-    for ax, name, label in zip(axes, RUNS, ["(a)", "(b)", "(c)"]):
-        plot_panel(ax, read_kpis(name), label)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--study-dir", type=Path)
+    parser.add_argument("--run", type=int, default=2)
+    args = parser.parse_args()
+    if args.study_dir:
+        labels = ["off", "max", "geometric", "linear", "four-delay"]
+        labels = [p for p in labels if
+                  (args.study_dir / f"run-{args.run:03d}-{p}" / "result.json").is_file()]
+        if not labels:
+            parser.error(f"No completed policies for RNG run {args.run} in {args.study_dir}")
+        paths = [args.study_dir / f"run-{args.run:03d}-{p}" / "study_run_KPIs.txt" for p in labels]
+        out = args.study_dir / f"fig2-run-{args.run:03d}.png"
+    else:
+        labels = ["(a)", "(b)", "(c)"]
+        paths = [Path(f"{name}_seed-2_KPIs.txt") for name in RUNS]
+        out = OUT_DIR / "fig2.png"
+    fig, axes = plt.subplots(len(paths), 1, figsize=(6, 4.3 * len(paths)), squeeze=False)
+    for ax, path, label in zip(axes[:, 0], paths, labels):
+        plot_panel(ax, read_kpis(path), label)
     fig.tight_layout(h_pad=3.0)
-    out = OUT_DIR / "fig2.png"
     fig.savefig(out, dpi=150)
     print(f"saved {out}")
-    plot_ampdu()
+    if not args.study_dir:
+        plot_ampdu()
 
 
 if __name__ == "__main__":

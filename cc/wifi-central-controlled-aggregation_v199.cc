@@ -202,6 +202,10 @@ Two possibilities:
 #include "ns3/random-variable-stream.h"
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <set>
 
 //#include "ns3/arp-cache.h"  // If you want to do things with the ARPs
 //#include "ns3/arp-header.h"
@@ -886,7 +890,7 @@ static void printTime (double period, std::string myoutputFileName, std::string 
 {
   std::cout << Simulator::Now().GetSeconds() << "\t" 
             << myoutputFileName << "_" 
-            << myoutputFileSurname << '\n';
+            << myoutputFileSurname << std::endl;
 
   // re-schedule 
   Simulator::Schedule (Seconds (period), &printTime, period, myoutputFileName, myoutputFileSurname);
@@ -2097,6 +2101,66 @@ struct AllTheFlowStatistics {
 };
 
 
+struct DelayHistory {
+  std::array<double, 4> values{};
+  size_t count = 0;
+
+  void Add(double delay)
+  {
+    if (count == values.size()) {
+      std::rotate(values.begin(), values.begin() + 1, values.end());
+      values.back() = delay;
+    } else {
+      values[count++] = delay;
+    }
+  }
+};
+
+struct StudyMetrics {
+  Time deadline;
+  std::set<std::pair<uint16_t, uint32_t>> onTimeVoice;
+  uint64_t dataPpdus = 0;
+  uint64_t aggregates = 0;
+  uint32_t maxAggregateBytes = 0;
+  Time dataAirtime;
+  Time aggregateAirtime;
+
+  void ReceiveVoice(Ptr<const Packet> packet, const Address&, const Address& local)
+  {
+    SeqTsHeader header;
+    packet->PeekHeader(header);
+    if (Simulator::Now() - header.GetTs() <= deadline) {
+      onTimeVoice.emplace(InetSocketAddress::ConvertFrom(local).GetPort(), header.GetSeq());
+    }
+  }
+
+  void Transmit(WifiConstPsduMap psdus, WifiTxVector txVector, double)
+  {
+    bool data = false;
+    bool aggregate = false;
+    for (const auto& entry : psdus) {
+      const auto& psdu = entry.second;
+      if (!psdu->GetHeader(0).IsData()) {
+        continue;
+      }
+      data = true;
+      if (psdu->GetNMpdus() > 1) {
+        aggregate = true;
+        maxAggregateBytes = std::max(maxAggregateBytes, psdu->GetSize());
+      }
+    }
+    if (data) {
+      Time airtime = WifiPhy::CalculateTxDuration(psdus, txVector, WIFI_PHY_BAND_5GHZ);
+      ++dataPpdus;
+      dataAirtime += airtime;
+      if (aggregate) {
+        ++aggregates;
+        aggregateAirtime += airtime;
+      }
+    }
+  }
+};
+
 // The number of parameters for calling functions using 'schedule' is limited to 6, so I have to create a struct
 struct adjustAmpduParameters {
   uint32_t verboseLevel;
@@ -2106,6 +2170,8 @@ struct adjustAmpduParameters {
   std::string mynameAMPDUFile;
   uint16_t methodAdjustAmpdu;
   uint32_t stepAdjustAmpdu; 
+  std::map<uint32_t, DelayHistory>* histories;
+  std::ostream* decisions;
 };
 
 
@@ -2129,6 +2195,7 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
 
     // find the highest latency of all the VoIP STAs associated to that AP
     double highestLatencyVoIPFlows = 0.0;
+    bool hasVoiceDelay = false;
 
     for (STA_recordVector::const_iterator indexSTA = assoc_vector.begin (); indexSTA != assoc_vector.end (); indexSTA++) {
 
@@ -2161,6 +2228,7 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
 
             // 'isnan' checks if the value is not a number
             if (!std::isnan(myAllTheFlowStatistics.FlowStatisticsVoIPUpload[indexForVector].lastIntervalDelay)) {
+              hasVoiceDelay = true;
               if (myparam.verboseLevel > 0)
                 std::cout << "\tDelay: " << myAllTheFlowStatistics.FlowStatisticsVoIPUpload[indexForVector].lastIntervalDelay 
                           << "\tThroughput: " << myAllTheFlowStatistics.FlowStatisticsVoIPUpload[indexForVector].lastIntervalRxBytes * 8 / myparam.timeInterval
@@ -2193,6 +2261,7 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
 
             // 'isnan' checks if the value is not a number                                      
             if (!std::isnan(myAllTheFlowStatistics.FlowStatisticsVoIPDownload[ indexForVector].lastIntervalDelay)) {
+              hasVoiceDelay = true;
               if (myparam.verboseLevel > 0)
                 std::cout << "\tDelay: " << myAllTheFlowStatistics.FlowStatisticsVoIPDownload[ indexForVector ].lastIntervalDelay 
                           << "\tThroughput: " << myAllTheFlowStatistics.FlowStatisticsVoIPDownload[ indexForVector ].lastIntervalRxBytes * 8 / myparam.timeInterval
@@ -2437,6 +2506,43 @@ void adjustAMPDU (//FlowStatistics* myFlowStatistics,
       }
 
 
+
+    } else if (myparam.methodAdjustAmpdu == 5 || myparam.methodAdjustAmpdu == 6) {
+      auto& history = (*myparam.histories)[(*indexAP)->GetApid()];
+      double slope = std::numeric_limits<double>::quiet_NaN();
+      double score = slope;
+      const char* reason = "missing";
+      int64_t change = 0;
+      if (!hasVoiceDelay) {
+        history.count = 0;
+      } else {
+        history.Add(highestLatencyVoIPFlows);
+        if (history.count == history.values.size()) {
+          // Least-squares slope for sample positions 0, 1, 2, 3.
+          const auto& d = history.values;
+          slope = (-3 * d[0] - d[1] + d[2] + 3 * d[3]) / 10;
+          score = d[3] + std::max(0.0, slope);
+        }
+        if (highestLatencyVoIPFlows > myparam.latencyBudget) {
+          change = -int64_t(myparam.stepAdjustAmpdu);
+          reason = "over_budget";
+        } else if (highestLatencyVoIPFlows == myparam.latencyBudget) {
+          reason = "at_budget";
+        } else if (history.count < history.values.size()) {
+          reason = "warmup";
+        } else if (myparam.methodAdjustAmpdu == 6 && score >= myparam.latencyBudget) {
+          reason = "trend_hold";
+        } else {
+          change = myparam.stepAdjustAmpdu;
+          reason = "increase";
+        }
+      }
+      newAmpduValue = std::clamp<int64_t>(int64_t(currentAmpduValue) + change,
+                                        minimumAmpduValue, myparam.maxAmpduSize);
+      *myparam.decisions << Simulator::Now().GetSeconds() << ',' << (*indexAP)->GetApid()
+        << ',' << (hasVoiceDelay ? highestLatencyVoIPFlows : std::numeric_limits<double>::quiet_NaN())
+        << ',' << history.count << ',' << slope << ',' << score
+        << ',' << currentAmpduValue << ',' << newAmpduValue << ',' << reason << '\n';
 
     // If the selected method does not exist, exit
     } else {
@@ -2852,6 +2958,7 @@ int main (int argc, char *argv[]) {
   std::string outputFileName; // the beginning of the name of the output files to be generated during the simulations
   std::string outputFileSurname; // this will be added to certain files
   bool saveXMLFile = false; // save per-flow results in an XML file
+  bool studyMetrics = false;
 
   uint32_t numChannels = 4; // by default, 4 different channels are used in the APs
 
@@ -2964,22 +3071,25 @@ int main (int argc, char *argv[]) {
   cmd.AddValue ("outputFileName", "First characters to be used in the name of the output files", outputFileName);
   cmd.AddValue ("outputFileSurname", "Other characters to be used in the name of the output files (not in the average one)", outputFileSurname);
   cmd.AddValue ("saveXMLFile", "Save per-flow results to an XML file?", saveXMLFile);
+  cmd.AddValue ("studyMetrics", "Record voice deadline and AP airtime metrics (802.11ac)", studyMetrics);
 
   cmd.Parse (argc, argv);
+  NS_ABORT_MSG_IF(studyMetrics && (version80211 != 1 || latencyBudget <= 0),
+                 "Study metrics require 802.11ac and a positive voice deadline");
+  StudyMetrics metrics{};
+  metrics.deadline = Seconds(latencyBudget);
   g_channelWidth = channelWidth; // ns-3.48 port
 
 
   // Variable to store the last AMPDU value for which latency was below the limit
   // I use a pointer because it has to be modified by a function
-  uint32_t *belowLatencyAmpduValue;
-  belowLatencyAmpduValue = (uint32_t *) malloc (1);
-  *belowLatencyAmpduValue = MTU + 100;
+  uint32_t belowLatencyAmpduValue = MTU + 100;
 
   // Variable to store the last AMPDU value for which latency was above the limit
   // I use a pointer because it has to be modified by a function
-  uint32_t *aboveLatencyAmpduValue;
-  aboveLatencyAmpduValue = (uint32_t *) malloc (1);
-  *aboveLatencyAmpduValue = maxAmpduSize;
+  uint32_t aboveLatencyAmpduValue = maxAmpduSize;
+  std::map<uint32_t, DelayHistory> delayHistories;
+  std::ofstream decisions;
 
 
   // If these parameters have not been set, set the default values
@@ -3269,6 +3379,7 @@ int main (int argc, char *argv[]) {
     myFlowStatisticsVoIPUpload[i].acumRxBytes = 0;
     myFlowStatisticsVoIPUpload[i].acumLostPackets = 0;
     myFlowStatisticsVoIPUpload[i].destinationPort = INITIALPORT_VOIP_UPLOAD + i;
+    myFlowStatisticsVoIPUpload[i].lastIntervalDelay = std::numeric_limits<double>::quiet_NaN();
   }
 
   // Initialize to 0
@@ -3279,6 +3390,7 @@ int main (int argc, char *argv[]) {
     myFlowStatisticsVoIPDownload[i].acumRxBytes = 0;
     myFlowStatisticsVoIPDownload[i].acumLostPackets = 0;
     myFlowStatisticsVoIPDownload[i].destinationPort = INITIALPORT_VOIP_DOWNLOAD + i;
+    myFlowStatisticsVoIPDownload[i].lastIntervalDelay = std::numeric_limits<double>::quiet_NaN();
   }
 
   // Initialize to 0
@@ -4073,6 +4185,11 @@ int main (int argc, char *argv[]) {
 
     // save everything in containers (add a line to the vector of containers, including the new AP device and interface)
     apWiFiDevices.push_back (apWiFiDev);
+    if (studyMetrics) {
+      auto phy = DynamicCast<WifiNetDevice>(apWiFiDev.Get(0))->GetPhy();
+      NS_ABORT_MSG_IF(!phy->TraceConnectWithoutContext("PhyTxPsduBegin",
+                       MakeCallback(&StudyMetrics::Transmit, &metrics)), "Cannot trace AP data transmissions");
+    }
   }
 
 
@@ -4678,6 +4795,10 @@ int main (int argc, char *argv[]) {
     }
 
     VoipUpServer.Start (Seconds (0.0));
+    if (studyMetrics) {
+      NS_ABORT_MSG_IF(!VoipUpServer.Get(0)->TraceConnectWithoutContext("RxWithAddresses",
+                       MakeCallback(&StudyMetrics::ReceiveVoice, &metrics)), "Cannot trace voice reception");
+    }
     VoipUpServer.Stop (Seconds (simulationTime + INITIALTIMEINTERVAL));
 
     // UdpClient runs in the STA, so I must create a UdpClient per STA
@@ -5307,14 +5428,22 @@ int main (int argc, char *argv[]) {
       myparam.mynameAMPDUFile = nameAMPDUFile.str();
       myparam.methodAdjustAmpdu = methodAdjustAmpdu;
       myparam.stepAdjustAmpdu = stepAdjustAmpdu;
+      myparam.histories = &delayHistories;
+      myparam.decisions = &decisions;
+      if (methodAdjustAmpdu == 5 || methodAdjustAmpdu == 6) {
+        decisions.open(outputFileName + "_" + outputFileSurname + "_decisions.csv");
+        NS_ABORT_MSG_IF(!decisions, "Cannot open controller decision log");
+        decisions << std::setprecision(17)
+                  << "time_s,ap,delay_s,samples,slope_s_per_interval,score_s,old_cap,new_cap,reason\n";
+      }
 
       // Modify the AMPDU of the APs where there are VoIP flows
       Simulator::Schedule(  Seconds(INITIALTIMEINTERVAL + timeMonitorKPIs + 0.0002),
                             &adjustAMPDU,
                             myAllTheFlowStatistics,
                             myparam,
-                            belowLatencyAmpduValue,
-                            aboveLatencyAmpduValue);
+                            &belowLatencyAmpduValue,
+                            &aboveLatencyAmpduValue);
     }
   }
 
@@ -5636,6 +5765,29 @@ if(false) {
         total_video_download_throughput = total_video_download_throughput + ( flow->second.rxBytes * 8.0 / simulationTime );                                          
         number_of_video_download_flows ++;
     } 
+  }
+
+  if (studyMetrics) {
+    const auto sent = total_VoIP_upload_tx_packets;
+    const auto received = total_VoIP_upload_rx_packets;
+    const auto onTime = metrics.onTimeVoice.size();
+    NS_ABORT_MSG_IF(onTime > received || received > sent, "Inconsistent voice packet counters");
+    std::ofstream summary(outputFileName + "_" + outputFileSurname + "_study.csv");
+    summary << "tcp_mbps,voice_mean_delay_ms,voice_mean_jitter_ms,voice_sent,voice_received,"
+               "voice_on_time,voice_deadline_misses,ap_data_ppdus,ap_aggregates,"
+               "max_aggregate_bytes,ap_data_airtime_ms,ap_aggregate_airtime_ms\n";
+    const auto ratio = [](double sum, uint32_t count) {
+      return count ? sum / count : std::numeric_limits<double>::quiet_NaN();
+    };
+    summary << std::setprecision(12) << total_TCP_download_throughput / 1e6 << ','
+            << ratio(total_VoIP_upload_latency * 1000, received) << ','
+            << ratio(total_VoIP_upload_jitter * 1000, received) << ','
+            << sent << ',' << received << ',' << onTime << ',' << sent - onTime << ','
+            << metrics.dataPpdus << ',' << metrics.aggregates << ',' << metrics.maxAggregateBytes << ','
+            << metrics.dataAirtime.GetSeconds() * 1000 << ','
+            << metrics.aggregateAirtime.GetSeconds() * 1000 << '\n';
+    summary.flush();
+    NS_ABORT_MSG_IF(!summary, "Cannot write study metrics");
   }
 
   if (verboseLevel > 0) {
