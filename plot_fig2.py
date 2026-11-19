@@ -41,7 +41,7 @@ def read_kpis(name):
     return df
 
 
-def plot_panel(ax, df, label):
+def plot_panel(ax, df, label, show_label=True):
     voip = df[df["app"] == "VoIP_upload"]
     tcp = df[df["app"] == "TCP_download"].groupby("t")["thr"].sum() / 1e6
 
@@ -76,8 +76,9 @@ def plot_panel(ax, df, label):
     h2, l2 = ax2.get_legend_handles_labels()
     ax2.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8, frameon=False)
 
-    # Panel label below the axes: (a), (b), (c)
-    ax.text(0.5, -0.3, label, transform=ax.transAxes, ha="center", va="top", fontsize=11)
+    # Panel label below the axes: (a), (b), (c) -- only in the combined figure
+    if show_label:
+        ax.text(0.5, -0.3, label, transform=ax.transAxes, ha="center", va="top", fontsize=11)
 
     shown_voip = voip[voip["t"] <= X_MAX_S]
     print(f"{label} first {X_MAX_S} s: mean TCP {tcp[tcp.index <= X_MAX_S].mean():.1f} Mbps, "
@@ -115,6 +116,18 @@ def main():
     out = OUT_DIR / "fig2.png"
     fig.savefig(out, dpi=150)
     print(f"saved {out}")
+    plt.close(fig)
+
+    # Also one file per panel: fig2a.png, fig2b.png, fig2c.png
+    for name, label in zip(RUNS, ["(a)", "(b)", "(c)"]):
+        fig, ax = plt.subplots(figsize=(6, 4))
+        plot_panel(ax, read_kpis(name), label, show_label=False)
+        fig.tight_layout()
+        out = OUT_DIR / f"{name}.png"
+        fig.savefig(out, dpi=150)
+        print(f"saved {out}")
+        plt.close(fig)
+
     plot_ampdu()
 
 

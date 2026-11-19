@@ -3,7 +3,8 @@
 #   1 AP, 1 TCP download user + 1 VoIP upload user, 180 s, RngRun=2
 #   fig2a: no aggregation        (test451)
 #   fig2b: aggregation always on (test452)
-#   fig2c: dynamic algorithm     (test453, methodAdjustAmpdu=3)
+#   fig2c: dynamic algorithm, Method #1 (methodAdjustAmpdu=0), as stated in the
+#          paper text. Note: test453.sh uses methodAdjustAmpdu=3 (Method #2).
 # Then plot them with plot_fig2.py -> scratch/wifi-sweet-spot/fig2.png
 cd "$(dirname "$0")/../.." || exit 1
 
@@ -34,6 +35,6 @@ run fig2a --rateAPsWithAMPDUenabled=0.0 --aggregationDisableAlgorithm=0
 run fig2b --rateAPsWithAMPDUenabled=1.0 --aggregationDisableAlgorithm=0 --aggregationDynamicAlgorithm=0
 run fig2c --rateAPsWithAMPDUenabled=1.0 --aggregationDisableAlgorithm=0 \
           --aggregationDynamicAlgorithm=1 --timeMonitorKPIs=0.25 --latencyBudget=0.004 \
-          --methodAdjustAmpdu=3 --stepAdjustAmpdu=3000
+          --methodAdjustAmpdu=0 --stepAdjustAmpdu=3000
 
 scratch/lab/.venv/bin/python scratch/wifi-sweet-spot/plot_fig2.py
